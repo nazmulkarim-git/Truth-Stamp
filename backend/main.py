@@ -13,11 +13,14 @@ from .engine import (
 )
 from .report import build_pdf_report
 
-app = FastAPI(title="TruthStamp API", version="0.2.1")
+app = FastAPI()
+
+allowed = os.getenv("CORS_ORIGINS", "https://truthstamp-web.onrender.com").split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in allowed if o.strip()],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
