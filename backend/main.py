@@ -15,11 +15,12 @@ from .report import build_pdf_report
 
 app = FastAPI()
 
-allowed = os.getenv("CORS_ORIGINS", "https://truthstamp-web.onrender.com").split(",")
+# Allow your frontend origin (comma-separated)
+origins = os.getenv("CORS_ORIGINS", "https://truthstamp-web.onrender.com").split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in allowed if o.strip()],
+    allow_origins=[o.strip() for o in origins if o.strip()],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
