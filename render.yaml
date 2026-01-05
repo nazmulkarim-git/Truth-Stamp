@@ -13,7 +13,6 @@ services:
   - type: web
     name: truthstamp-web
     env: node
-    nodeVersion: 20
     rootDir: web
     plan: free
     autoDeploy: true
