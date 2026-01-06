@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Upload,
   FileText,
@@ -62,6 +62,15 @@ export default function Page() {
   const [API] = useState(DEFAULT_API);
   const [role, setRole] = useState<string>("investigator");
   const [useCase, setUseCase] = useState<string>("insurance");
+
+  // Evidence Workspace (Cases)
+  type CaseItem = { id: string; title: string; description?: string | null; created_at: string };
+  const [cases, setCases] = useState<CaseItem[]>([]);
+  const [caseId, setCaseId] = useState<string>("");
+  const [showCaseCreate, setShowCaseCreate] = useState(false);
+  const [newCaseTitle, setNewCaseTitle] = useState("");
+  const [newCaseDesc, setNewCaseDesc] = useState("");
+
   const [file, setFile] = useState<File | null>(null);
 
   const [busy, setBusy] = useState(false);
@@ -72,6 +81,22 @@ export default function Page() {
   const [email, setEmail] = useState("");
   const [leadNotes, setLeadNotes] = useState("");
   const [leadStatus, setLeadStatus] = useState<"idle" | "ok" | "err">("idle");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${API}/cases`);
+        if (!r.ok) return;
+        const data = (await r.json()) as CaseItem[];
+        setCases(data);
+        if (!caseId && data.length) setCaseId(data[0].id);
+      } catch {
+        // ignore
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
 
   const badge = useMemo(() => {
     if (!result) return { label: "Awaiting evidence", variant: "secondary" as const, Icon: BadgeCheck };
@@ -87,7 +112,8 @@ export default function Page() {
     fd.append("file", file);
     fd.append("role", role);
     fd.append("use_case", useCase);
-    const r = await fetch(`${API}${endpoint}`, { method: "POST", body: fd });
+    if (caseId) fd.append("case_id", caseId);
+    const r = await fetch(`${API}${endpoint}`, { method: "POST", body: fd, headers: { "x-truthstamp-actor": "web" } });
     if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
     return r;
   }
@@ -147,7 +173,29 @@ export default function Page() {
     }
   }
 
-  return (
+  
+  async function createCase() {
+    const title = newCaseTitle.trim();
+    if (!title) return;
+    try {
+      const r = await fetch(`${API}/cases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, description: newCaseDesc.trim() || null }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      const c = (await r.json()) as CaseItem;
+      setCases((prev) => [c, ...prev]);
+      setCaseId(c.id);
+      setShowCaseCreate(false);
+      setNewCaseTitle("");
+      setNewCaseDesc("");
+    } catch (e: any) {
+      setError(e?.message || "Failed to create case");
+    }
+  }
+
+return (
     <main className="min-h-screen bg-white">
       {/* Subtle blue glow */}
       <div className="pointer-events-none fixed inset-0 -z-10">
@@ -170,6 +218,25 @@ export default function Page() {
           </div>
 
           <div className="flex items-center gap-2">
+            <div className="hidden md:flex items-center gap-2">
+              <div className="text-xs text-slate-500">Case</div>
+              <select
+                className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
+                value={caseId}
+                onChange={(e) => setCaseId(e.target.value)}
+              >
+                <option value="">No case</option>
+                {cases.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title}
+                  </option>
+                ))}
+              </select>
+              <Button variant="outline" onClick={() => setShowCaseCreate(true)}>
+                New Case
+              </Button>
+            </div>
+
             <Badge variant={badge.variant} className="gap-2">
               <badge.Icon className="h-4 w-4" />
               {badge.label}
