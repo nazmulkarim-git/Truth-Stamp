@@ -10,8 +10,11 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, F
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
-from passlib.context import CryptContext
 import jwt
+import hashlib
+import hmac
+import secrets
+import sqlite3
 
 from .config import MAX_MB
 from .models import (
@@ -46,10 +49,16 @@ from . import workspace
 # -----------------------------
 app = FastAPI()
 
-origins = os.getenv("CORS_ORIGINS", "https://truthstamp-web.onrender.com").split(",")
+_origins_raw = os.getenv(
+    "CORS_ORIGINS",
+    "https://truthstamp-web.onrender.com,http://localhost:3000,http://localhost:10000",
+)
+origins = [o.strip() for o in _origins_raw.split(",") if o.strip()]
+if "*" in origins:
+    origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in origins if o.strip()],
+    allow_origins=origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,12 +67,36 @@ app.add_middleware(
 workspace.init_db()
 
 # -----------------------------
-# Auth
+# Auth (PBKDF2-HMAC-SHA256)
 # -----------------------------
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 JWT_SECRET = os.getenv("TRUTHSTAMP_JWT_SECRET", "dev-change-me")
 JWT_ALG = "HS256"
 JWT_TTL_HOURS = int(os.getenv("TRUTHSTAMP_JWT_TTL_HOURS", "168"))  # 7 days
+
+
+# Password hashing (PBKDF2) to avoid native deps on slim images.
+# Stored format: pbkdf2_sha256$<iterations>$<salt_hex>$<dk_hex>
+PBKDF2_ITERATIONS = int(os.getenv("TRUTHSTAMP_PBKDF2_ITERS", "200000"))
+
+
+def _hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt.hex()}${dk.hex()}"
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    try:
+        scheme, iters_s, salt_hex, dk_hex = stored.split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            return False
+        iters = int(iters_s)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(dk_hex)
+        got = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iters)
+        return hmac.compare_digest(got, expected)
+    except Exception:
+        return False
 
 
 class AuthIn(BaseModel):
@@ -105,6 +138,22 @@ def get_current_user(request: Request) -> dict:
     return u
 
 
+def get_optional_user(request: Request) -> Optional[dict]:
+    """Return user dict if Bearer token present/valid, else None."""
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth or not auth.lower().startswith("bearer "):
+        return None
+    token = auth.split(" ", 1)[1].strip()
+    try:
+        payload = _decode_token(token)
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+        return workspace.get_user(user_id)
+    except Exception:
+        return None
+
+
 @app.post("/auth/register", response_model=AuthOut)
 def register(payload: AuthIn):
     existing = workspace.get_user_by_email(payload.email)
@@ -112,8 +161,12 @@ def register(payload: AuthIn):
         raise HTTPException(status_code=409, detail="Email already registered")
     if len(payload.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    ph = pwd_context.hash(payload.password)
-    u = workspace.create_user(payload.email, ph)
+    ph = _hash_password(payload.password)
+    try:
+        u = workspace.create_user(payload.email, ph)
+    except sqlite3.IntegrityError:
+        # Unique constraint on users.email
+        raise HTTPException(status_code=409, detail="Email already registered")
     token = _create_token(u["id"], u["email"])
     return {"token": token, "user": {"id": u["id"], "email": u["email"]}}
 
@@ -121,7 +174,7 @@ def register(payload: AuthIn):
 @app.post("/auth/login", response_model=AuthOut)
 def login(payload: AuthIn):
     u = workspace.get_user_by_email(payload.email)
-    if not u or not pwd_context.verify(payload.password, u.get("password_hash") or ""):
+    if not u or not _verify_password(payload.password, u.get("password_hash") or ""):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     token = _create_token(u["id"], u["email"])
     return {"token": token, "user": {"id": u["id"], "email": u["email"]}}
@@ -324,12 +377,12 @@ def list_case_events(case_id: str, limit: int = 200, user=Depends(get_current_us
 
 
 # -----------------------------
-# Analysis & Report - AUTH REQUIRED
+# Analysis (public) & Report (login required)
 # -----------------------------
 @app.post("/analyze", response_model=AnalysisResult)
 async def analyze(
     request: Request,
-    user=Depends(get_current_user),
+    user: Optional[dict] = Depends(get_optional_user),
     file: UploadFile = File(...),
     role: str | None = Form(default=None),
     use_case: str | None = Form(default=None),
@@ -339,8 +392,12 @@ async def analyze(
     if _too_big(len(contents)):
         raise HTTPException(status_code=413, detail=f"File too large. Max {MAX_MB} MB.")
 
+    # If caller isn't logged in, ignore case_id (guest single-file analysis).
+    if not user:
+        case_id = None
+
     # validate case belongs to user if provided
-    if case_id and not workspace.get_case(user["id"], case_id):
+    if case_id and user and not workspace.get_case(user["id"], case_id):
         raise HTTPException(status_code=404, detail="Case not found")
 
     with tempfile.TemporaryDirectory() as td:
@@ -350,7 +407,7 @@ async def analyze(
 
         res = _analyze_to_model(in_path, file.filename, role, use_case, bytes_len=len(contents))
 
-        if case_id:
+        if case_id and user:
             evd = workspace.add_evidence(
                 case_id=case_id,
                 filename=file.filename or "upload",

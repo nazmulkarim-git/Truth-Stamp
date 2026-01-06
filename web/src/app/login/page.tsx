@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -11,6 +11,8 @@ const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:10000";
 
 export default function LoginPage() {
   const router = useRouter();
+  const params = useSearchParams();
+  const next = params.get("next") || "/app";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -29,7 +31,7 @@ export default function LoginPage() {
       if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
       setToken(data.token);
-      router.replace("/app");
+      router.replace(next);
     } catch (err: any) {
       setError(err?.message || "Login failed");
     } finally {
