@@ -124,9 +124,7 @@ export default function Home() {
 
           <div className="flex items-center gap-2">
             {token ? (
-              <>
-                <Button variant="secondary" onClick={() => router.push("/app")}>Evidence Workspace</Button>
-              </>
+              <Button variant="secondary" onClick={() => router.push("/app")}>Evidence Workspace</Button>
             ) : (
               <>
                 <Button variant="secondary" onClick={() => router.push("/login")}>Sign in</Button>
@@ -142,7 +140,7 @@ export default function Home() {
           <div className="lg:col-span-7">
             <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs text-blue-700">
               <Sparkles className="h-3.5 w-3.5" />
-              Provenance-first verification (no "fake probability")
+              Provenance-first verification (no &quot;fake probability&quot;)
             </div>
             <h1 className="mt-4 text-4xl font-semibold tracking-tight text-slate-900">
               Trust digital evidence <span className="text-blue-700">without guessing</span>.
@@ -263,7 +261,7 @@ export default function Home() {
         </div>
 
         <footer className="mt-12 text-xs text-slate-500">
-          TruthStamp reports provenance and metadata. It does not estimate “fake probability.”
+          TruthStamp reports provenance and metadata. It does not estimate &quot;fake probability.&quot;
         </footer>
       </main>
     </div>
