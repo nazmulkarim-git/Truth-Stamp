@@ -5,7 +5,7 @@ import sqlite3
 import json
 import uuid
 import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_DB_PATH = os.getenv("TRUTHSTAMP_DB_PATH", "/tmp/truthstamp.db")
 
@@ -25,39 +25,56 @@ def connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    """Create tables if not exist + apply light migrations."""
     con = connect()
-    cur = con.cursor()
 
-    cur.execute(
+    # Users
+    con.execute(
         """
-        CREATE TABLE IF NOT EXISTS cases (
+        CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            description TEXT,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
         """
     )
 
-    cur.execute(
+    # Cases (owned by user)
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cases (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        """
+    )
+
+    # Evidence
+    con.execute(
         """
         CREATE TABLE IF NOT EXISTS evidence (
             id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
-            filename TEXT,
-            sha256 TEXT,
+            filename TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
             media_type TEXT,
             bytes INTEGER,
             provenance_state TEXT,
             summary TEXT,
-            analysis_json TEXT NOT NULL,
+            analysis_json TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY(case_id) REFERENCES cases(id)
         );
         """
     )
 
-    cur.execute(
+    # Events (chain of custody)
+    con.execute(
         """
         CREATE TABLE IF NOT EXISTS events (
             id TEXT PRIMARY KEY,
@@ -75,6 +92,27 @@ def init_db() -> None:
         """
     )
 
+    # Simple migrations for older DBs: add missing columns safely
+    def _col_exists(table: str, col: str) -> bool:
+        rows = con.execute(f"PRAGMA table_info({table});").fetchall()
+        return any(r[1] == col for r in rows)
+
+    # cases.user_id might be missing in older DB
+    if not _col_exists("cases", "user_id"):
+        # If the table existed without user_id, add it nullable then backfill to 'public' user.
+        con.execute("ALTER TABLE cases ADD COLUMN user_id TEXT;")
+        # ensure a default 'public' user
+        public = con.execute("SELECT id FROM users WHERE email = ?", ("public@truthstamp",)).fetchone()
+        if not public:
+            public_id = _new_id("usr")
+            con.execute(
+                "INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                (public_id, "public@truthstamp", "disabled", _utc_now_iso()),
+            )
+        public_id = con.execute("SELECT id FROM users WHERE email = ?", ("public@truthstamp",)).fetchone()[0]
+        con.execute("UPDATE cases SET user_id = COALESCE(user_id, ?)", (public_id,))
+        con.commit()
+
     con.commit()
     con.close()
 
@@ -83,39 +121,155 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
 
-def create_case(title: str, description: Optional[str] = None) -> Dict[str, Any]:
-    case_id = _new_id("case")
-    created_at = _utc_now_iso()
+# -----------------------------
+# Users
+# -----------------------------
+def create_user(email: str, password_hash: str) -> Dict[str, Any]:
+    init_db()
     con = connect()
+    user_id = _new_id("usr")
+    created_at = _utc_now_iso()
     con.execute(
-        "INSERT INTO cases (id, title, description, created_at) VALUES (?, ?, ?, ?)",
-        (case_id, title, description, created_at),
+        "INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+        (user_id, email.lower().strip(), password_hash, created_at),
     )
     con.commit()
     con.close()
-    return {"id": case_id, "title": title, "description": description, "created_at": created_at}
+    return {"id": user_id, "email": email.lower().strip(), "created_at": created_at}
 
 
-def list_cases(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-    con = connect()
-    rows = con.execute(
-        "SELECT id, title, description, created_at FROM cases ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    ).fetchall()
-    con.close()
-    return [dict(r) for r in rows]
-
-
-def get_case(case_id: str) -> Optional[Dict[str, Any]]:
+def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    init_db()
     con = connect()
     row = con.execute(
-        "SELECT id, title, description, created_at FROM cases WHERE id = ?",
-        (case_id,),
+        "SELECT id, email, password_hash, created_at FROM users WHERE email = ?",
+        (email.lower().strip(),),
     ).fetchone()
     con.close()
     return dict(row) if row else None
 
 
+def get_user(user_id: str) -> Optional[Dict[str, Any]]:
+    init_db()
+    con = connect()
+    row = con.execute(
+        "SELECT id, email, created_at FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+# -----------------------------
+# Cases
+# -----------------------------
+def create_case(user_id: str, title: str, description: Optional[str] = None) -> Dict[str, Any]:
+    init_db()
+    con = connect()
+    case_id = _new_id("case")
+    created_at = _utc_now_iso()
+    con.execute(
+        "INSERT INTO cases (id, user_id, title, description, created_at) VALUES (?, ?, ?, ?, ?)",
+        (case_id, user_id, title, description, created_at),
+    )
+    con.commit()
+    con.close()
+    return {"id": case_id, "user_id": user_id, "title": title, "description": description, "created_at": created_at}
+
+
+def list_cases(user_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    init_db()
+    con = connect()
+    rows = con.execute(
+        "SELECT id, user_id, title, description, created_at FROM cases WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (user_id, limit, offset),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_case(user_id: str, case_id: str) -> Optional[Dict[str, Any]]:
+    init_db()
+    con = connect()
+    row = con.execute(
+        "SELECT id, user_id, title, description, created_at FROM cases WHERE id = ? AND user_id = ?",
+        (case_id, user_id),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+# -----------------------------
+# Evidence
+# -----------------------------
+def add_evidence(
+    case_id: str,
+    filename: str,
+    sha256: str,
+    media_type: Optional[str],
+    nbytes: int,
+    provenance_state: Optional[str],
+    summary: Optional[str],
+    analysis: Dict[str, Any],
+) -> Dict[str, Any]:
+    init_db()
+    con = connect()
+    evidence_id = _new_id("evd")
+    created_at = _utc_now_iso()
+    con.execute(
+        "INSERT INTO evidence (id, case_id, filename, sha256, media_type, bytes, provenance_state, summary, analysis_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (evidence_id, case_id, filename, sha256, media_type, nbytes, provenance_state, summary, json.dumps(analysis), created_at),
+    )
+    con.commit()
+    con.close()
+    return {
+        "id": evidence_id,
+        "case_id": case_id,
+        "filename": filename,
+        "sha256": sha256,
+        "media_type": media_type,
+        "bytes": nbytes,
+        "provenance_state": provenance_state,
+        "summary": summary,
+        "created_at": created_at,
+    }
+
+
+def list_evidence(case_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+    init_db()
+    con = connect()
+    rows = con.execute(
+        "SELECT id, case_id, filename, sha256, media_type, bytes, provenance_state, summary, created_at "
+        "FROM evidence WHERE case_id = ? ORDER BY created_at DESC LIMIT ?",
+        (case_id, limit),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_evidence(case_id: str, evidence_id: str) -> Optional[Dict[str, Any]]:
+    init_db()
+    con = connect()
+    row = con.execute(
+        "SELECT id, case_id, filename, sha256, media_type, bytes, provenance_state, summary, analysis_json, created_at "
+        "FROM evidence WHERE case_id = ? AND id = ?",
+        (case_id, evidence_id),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["analysis"] = json.loads(d.pop("analysis_json") or "{}")
+    except Exception:
+        d["analysis"] = {}
+    return d
+
+
+# -----------------------------
+# Events
+# -----------------------------
 def add_event(
     case_id: str,
     event_type: str,
@@ -125,10 +279,11 @@ def add_event(
     user_agent: Optional[str] = None,
     details: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    init_db()
+    con = connect()
     event_id = _new_id("evt")
     created_at = _utc_now_iso()
-    payload = json.dumps(details or {}, ensure_ascii=False)
-    con = connect()
+    payload = json.dumps(details or {})
     con.execute(
         "INSERT INTO events (id, case_id, evidence_id, event_type, actor, ip, user_agent, details_json, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -140,6 +295,7 @@ def add_event(
 
 
 def list_events(case_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+    init_db()
     con = connect()
     rows = con.execute(
         "SELECT id, case_id, evidence_id, event_type, actor, ip, user_agent, details_json, created_at "
@@ -156,57 +312,3 @@ def list_events(case_id: str, limit: int = 200) -> List[Dict[str, Any]]:
             d["details"] = {}
         out.append(d)
     return out
-
-
-def add_evidence(case_id: str, analysis: Dict[str, Any]) -> Dict[str, Any]:
-    evidence_id = _new_id("evd")
-    created_at = _utc_now_iso()
-    con = connect()
-    con.execute(
-        "INSERT INTO evidence (id, case_id, filename, sha256, media_type, bytes, provenance_state, summary, analysis_json, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            evidence_id,
-            case_id,
-            analysis.get("filename"),
-            analysis.get("sha256"),
-            analysis.get("media_type"),
-            analysis.get("bytes"),
-            analysis.get("provenance_state"),
-            analysis.get("summary"),
-            json.dumps(analysis, ensure_ascii=False),
-            created_at,
-        ),
-    )
-    con.commit()
-    con.close()
-    return {"id": evidence_id, "case_id": case_id, "created_at": created_at}
-
-
-def list_evidence(case_id: str, limit: int = 200) -> List[Dict[str, Any]]:
-    con = connect()
-    rows = con.execute(
-        "SELECT id, case_id, filename, sha256, media_type, bytes, provenance_state, summary, created_at "
-        "FROM evidence WHERE case_id = ? ORDER BY created_at DESC LIMIT ?",
-        (case_id, limit),
-    ).fetchall()
-    con.close()
-    return [dict(r) for r in rows]
-
-
-def get_evidence(case_id: str, evidence_id: str) -> Optional[Dict[str, Any]]:
-    con = connect()
-    row = con.execute(
-        "SELECT id, case_id, filename, sha256, media_type, bytes, provenance_state, summary, analysis_json, created_at "
-        "FROM evidence WHERE case_id = ? AND id = ?",
-        (case_id, evidence_id),
-    ).fetchone()
-    con.close()
-    if not row:
-        return None
-    d = dict(row)
-    try:
-        d["analysis"] = json.loads(d.pop("analysis_json") or "{}")
-    except Exception:
-        d["analysis"] = {}
-    return d

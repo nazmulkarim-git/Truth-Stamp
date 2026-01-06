@@ -6,10 +6,12 @@ import datetime
 import pathlib
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Form, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Form, Request, Depends
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
+from passlib.context import CryptContext
+import jwt
 
 from .config import MAX_MB
 from .models import (
@@ -38,12 +40,12 @@ from .engine import (
 from .report import build_pdf_report
 from . import workspace
 
+
+# -----------------------------
+# App / CORS
+# -----------------------------
 app = FastAPI()
 
-# --- Initialize workspace DB (Render: ephemeral /tmp, fine for demo) ---
-workspace.init_db()
-
-# Allow your frontend origin (comma-separated)
 origins = os.getenv("CORS_ORIGINS", "https://truthstamp-web.onrender.com").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -53,7 +55,86 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+workspace.init_db()
 
+# -----------------------------
+# Auth
+# -----------------------------
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+JWT_SECRET = os.getenv("TRUTHSTAMP_JWT_SECRET", "dev-change-me")
+JWT_ALG = "HS256"
+JWT_TTL_HOURS = int(os.getenv("TRUTHSTAMP_JWT_TTL_HOURS", "168"))  # 7 days
+
+
+class AuthIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class AuthOut(BaseModel):
+    token: str
+    user: dict
+
+
+def _create_token(user_id: str, email: str) -> str:
+    now = datetime.datetime.utcnow()
+    exp = now + datetime.timedelta(hours=JWT_TTL_HOURS)
+    payload = {"sub": user_id, "email": email, "iat": int(now.timestamp()), "exp": int(exp.timestamp())}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def _decode_token(token: str) -> dict:
+    return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+
+
+def get_current_user(request: Request) -> dict:
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth or not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = auth.split(" ", 1)[1].strip()
+    try:
+        payload = _decode_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+    u = workspace.get_user(user_id)
+    if not u:
+        raise HTTPException(status_code=401, detail="User not found")
+    return u
+
+
+@app.post("/auth/register", response_model=AuthOut)
+def register(payload: AuthIn):
+    existing = workspace.get_user_by_email(payload.email)
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    ph = pwd_context.hash(payload.password)
+    u = workspace.create_user(payload.email, ph)
+    token = _create_token(u["id"], u["email"])
+    return {"token": token, "user": {"id": u["id"], "email": u["email"]}}
+
+
+@app.post("/auth/login", response_model=AuthOut)
+def login(payload: AuthIn):
+    u = workspace.get_user_by_email(payload.email)
+    if not u or not pwd_context.verify(payload.password, u.get("password_hash") or ""):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = _create_token(u["id"], u["email"])
+    return {"token": token, "user": {"id": u["id"], "email": u["email"]}}
+
+
+@app.get("/auth/me")
+def me(user=Depends(get_current_user)):
+    return {"id": user["id"], "email": user["email"]}
+
+
+# -----------------------------
+# Health
+# -----------------------------
 @app.get("/health")
 def health():
     return {"ok": True, "service": "truthstamp-api"}
@@ -73,11 +154,9 @@ def _cleanup_file(path: Optional[str]) -> None:
         pass
 
 
-def _actor_from_request(request: Request) -> Optional[str]:
-    # Frontend can send X-TruthStamp-Actor or X-Actor
-    return request.headers.get("x-truthstamp-actor") or request.headers.get("x-actor")
-
-
+# -----------------------------
+# Analysis Core
+# -----------------------------
 def _analyze_to_model(
     in_path: str,
     filename: Optional[str],
@@ -85,6 +164,8 @@ def _analyze_to_model(
     use_case: Optional[str],
     bytes_len: int,
     case_id: Optional[str] = None,
+    actor: str = "web",
+    request: Optional[Request] = None,
     evidence_id: Optional[str] = None,
 ) -> AnalysisResult:
     sha = sha256_file(in_path)
@@ -110,12 +191,9 @@ def _analyze_to_model(
 
     extra = []
     if make or model:
-        extra.append(
-            f"Device metadata suggests capture on: {(make or '').strip()} {(model or '').strip()}".strip()
-        )
+        extra.append(f"Device metadata suggests capture on: {(make or '').strip()} {(model or '').strip()}".strip())
     if sw:
         extra.append(f"Software/creator tool tag: {sw}")
-
     if isinstance(ai, dict) and ai.get("declared") == "POSSIBLE":
         extra.append(f"AI-related markers present in metadata: {', '.join((ai.get('signals') or [])[:6])}")
     if isinstance(trans, dict) and trans.get("screenshot_likelihood") == "HIGH":
@@ -140,46 +218,30 @@ def _analyze_to_model(
             confidence="PROVABLE" if prov_state != "UNVERIFIABLE_NO_PROVENANCE" else "INFERRED",
         ),
     ]
-    if make or model:
-        findings.append(
-            Finding(
-                key="device_make_model",
-                value=f"{make or ''} {model or ''}".strip(),
-                confidence="INFERRED",
-            )
-        )
-    else:
-        findings.append(
-            Finding(
-                key="device_make_model",
-                value=None,
-                confidence="UNKNOWN",
-                notes="No camera Make/Model metadata found.",
-            )
-        )
 
-    now_utc = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    if make or model:
+        findings.append(Finding(key="device_make_model", value=f"{make or ''} {model or ''}".strip(), confidence="INFERRED"))
+    else:
+        findings.append(Finding(key="device_make_model", value=None, confidence="UNKNOWN", notes="No camera Make/Model metadata found."))
 
     return AnalysisResult(
         filename=filename or "upload",
         role=role,
         use_case=use_case,
-        case_id=case_id,
-        evidence_id=evidence_id,
         media_type=media_type,
         sha256=sha,
         bytes=bytes_len,
         provenance_state=prov_state,
         summary=summary,
         tools=tool_list,
-        c2pa=c2pa if isinstance(c2pa, dict) else {},
+        c2pa=c2pa,
         metadata=meta_d,
         ffprobe=ff_d,
-        ai_disclosure=ai if isinstance(ai, dict) else {},
-        transformations=trans if isinstance(trans, dict) else {},
-        derived_timeline=tl if isinstance(tl, dict) else {},
-        metadata_consistency=cons if isinstance(cons, dict) else {},
-        metadata_completeness=metadata_completeness(meta_d) if isinstance(meta_d, dict) else {},
+        ai_disclosure=ai,
+        transformations=trans,
+        derived_timeline=tl,
+        metadata_consistency=cons,
+        metadata_completeness=metadata_completeness(meta_d),
         what_this_report_is=[
             "Cryptographic provenance verification when present (C2PA)",
             "Structured technical observations (metadata, encoding, workflow hints)",
@@ -191,7 +253,7 @@ def _analyze_to_model(
             "A detector of specific deepfake models",
         ],
         decision_context={
-            "purpose": "Support legal, insurance, compliance, or editorial decisions without guessing.",
+            "purpose": "Support financial, legal, or editorial decision-making without guessing.",
             "principle": "Separates provable facts, technical observations, and unknowns.",
         },
         what_would_make_verifiable=[
@@ -200,53 +262,54 @@ def _analyze_to_model(
             "Seal media at capture inside a trusted app or device workflow",
         ],
         report_integrity={
-            "timestamp": now_utc,
-            "analyzed_at": now_utc,
+            "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
             "tools": {t.name: {"available": t.available, "version": t.version} for t in tool_list},
         },
         findings=findings,
-        limitations=[
-            "Absence of cryptographic provenance is not evidence of manipulation; it limits verifiability.",
-            "Metadata can be missing or altered by common workflows (screenshots, exports, messaging apps, social platforms).",
-            "This report reflects the state of the provided file at the time of analysis.",
-        ],
     )
 
 
 # -----------------------------
-# Evidence Workspace (Cases)
+# Evidence Workspace (Cases) - AUTH REQUIRED
 # -----------------------------
-
 @app.post("/cases", response_model=CaseItem)
-def create_case(payload: CaseCreate):
-    c = workspace.create_case(payload.title, payload.description)
-    # initial event
-    workspace.add_event(c["id"], "case.created", details={"title": payload.title})
+def create_case(payload: CaseCreate, request: Request, user=Depends(get_current_user)):
+    c = workspace.create_case(user["id"], payload.title, payload.description)
+    workspace.add_event(
+        c["id"],
+        "case.created",
+        actor=user["email"],
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        details={"title": payload.title},
+    )
     return c
 
 
 @app.get("/cases", response_model=list[CaseItem])
-def list_cases(limit: int = 50, offset: int = 0):
-    return workspace.list_cases(limit=limit, offset=offset)
+def list_cases(limit: int = 50, offset: int = 0, user=Depends(get_current_user)):
+    return workspace.list_cases(user["id"], limit=limit, offset=offset)
 
 
 @app.get("/cases/{case_id}", response_model=CaseItem)
-def get_case(case_id: str):
-    c = workspace.get_case(case_id)
+def get_case(case_id: str, user=Depends(get_current_user)):
+    c = workspace.get_case(user["id"], case_id)
     if not c:
         raise HTTPException(status_code=404, detail="Case not found")
     return c
 
 
 @app.get("/cases/{case_id}/evidence", response_model=list[EvidenceItem])
-def list_case_evidence(case_id: str, limit: int = 200):
-    if not workspace.get_case(case_id):
+def list_case_evidence(case_id: str, limit: int = 200, user=Depends(get_current_user)):
+    if not workspace.get_case(user["id"], case_id):
         raise HTTPException(status_code=404, detail="Case not found")
     return workspace.list_evidence(case_id, limit=limit)
 
 
 @app.get("/cases/{case_id}/evidence/{evidence_id}")
-def get_case_evidence(case_id: str, evidence_id: str):
+def get_case_evidence(case_id: str, evidence_id: str, user=Depends(get_current_user)):
+    if not workspace.get_case(user["id"], case_id):
+        raise HTTPException(status_code=404, detail="Case not found")
     evd = workspace.get_evidence(case_id, evidence_id)
     if not evd:
         raise HTTPException(status_code=404, detail="Evidence not found")
@@ -254,19 +317,19 @@ def get_case_evidence(case_id: str, evidence_id: str):
 
 
 @app.get("/cases/{case_id}/events", response_model=list[EventItem])
-def list_case_events(case_id: str, limit: int = 200):
-    if not workspace.get_case(case_id):
+def list_case_events(case_id: str, limit: int = 200, user=Depends(get_current_user)):
+    if not workspace.get_case(user["id"], case_id):
         raise HTTPException(status_code=404, detail="Case not found")
     return workspace.list_events(case_id, limit=limit)
 
 
 # -----------------------------
-# Analysis & Report
+# Analysis & Report - AUTH REQUIRED
 # -----------------------------
-
 @app.post("/analyze", response_model=AnalysisResult)
 async def analyze(
     request: Request,
+    user=Depends(get_current_user),
     file: UploadFile = File(...),
     role: str | None = Form(default=None),
     use_case: str | None = Form(default=None),
@@ -276,54 +339,46 @@ async def analyze(
     if _too_big(len(contents)):
         raise HTTPException(status_code=413, detail=f"File too large. Max {MAX_MB} MB.")
 
-    actor = _actor_from_request(request)
-    ip = request.client.host if request.client else None
-    ua = request.headers.get("user-agent")
+    # validate case belongs to user if provided
+    if case_id and not workspace.get_case(user["id"], case_id):
+        raise HTTPException(status_code=404, detail="Case not found")
 
     with tempfile.TemporaryDirectory() as td:
         in_path = os.path.join(td, file.filename or "upload.bin")
         with open(in_path, "wb") as f:
             f.write(contents)
 
-        analysis_model = _analyze_to_model(in_path, file.filename, role, use_case, bytes_len=len(contents), case_id=case_id)
+        res = _analyze_to_model(in_path, file.filename, role, use_case, bytes_len=len(contents))
 
-        # If attached to a case, store evidence + events
         if case_id:
-            if not workspace.get_case(case_id):
-                raise HTTPException(status_code=404, detail="Case not found")
-
-            analysis_dict = analysis_model.model_dump()
-            evidence = workspace.add_evidence(case_id, analysis_dict)
-
-            # update model to include evidence_id
-            analysis_model.evidence_id = evidence["id"]
-
-            workspace.add_event(
-                case_id,
-                "evidence.uploaded",
-                evidence_id=evidence["id"],
-                actor=actor,
-                ip=ip,
-                user_agent=ua,
-                details={"filename": analysis_model.filename, "bytes": analysis_model.bytes},
+            evd = workspace.add_evidence(
+                case_id=case_id,
+                filename=file.filename or "upload",
+                sha256=res.sha256,
+                media_type=res.media_type,
+                nbytes=len(contents),
+                provenance_state=res.provenance_state,
+                summary=res.summary,
+                analysis=res.model_dump(),
             )
             workspace.add_event(
                 case_id,
                 "evidence.analyzed",
-                evidence_id=evidence["id"],
-                actor=actor,
-                ip=ip,
-                user_agent=ua,
-                details={"provenance_state": analysis_model.provenance_state, "sha256": analysis_model.sha256},
+                evidence_id=evd["id"],
+                actor=user["email"],
+                ip=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
+                details={"filename": file.filename, "sha256": res.sha256},
             )
 
-        return analysis_model
+        return res
 
 
 @app.post("/report")
 async def report(
     request: Request,
     background_tasks: BackgroundTasks,
+    user=Depends(get_current_user),
     file: UploadFile = File(...),
     role: str | None = Form(default=None),
     use_case: str | None = Form(default=None),
@@ -332,62 +387,45 @@ async def report(
     tmp_in = None
     tmp_pdf = None
 
-    actor = _actor_from_request(request)
-    ip = request.client.host if request.client else None
-    ua = request.headers.get("user-agent")
-
     try:
         contents = await file.read()
         if _too_big(len(contents)):
             raise HTTPException(status_code=413, detail=f"File too large. Max {MAX_MB} MB.")
+
+        if case_id and not workspace.get_case(user["id"], case_id):
+            raise HTTPException(status_code=404, detail="Case not found")
 
         suffix = os.path.splitext(file.filename or "")[-1] or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
             tmp_in = f.name
             f.write(contents)
 
-        analysis_model = _analyze_to_model(tmp_in, file.filename, role, use_case, bytes_len=len(contents), case_id=case_id)
+        analysis_model = _analyze_to_model(tmp_in, file.filename, role, use_case, bytes_len=len(contents))
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as pf:
             tmp_pdf = pf.name
 
-        analysis_dict = analysis_model.model_dump()
-        build_pdf_report(analysis_dict, tmp_pdf)
+        build_pdf_report(analysis_model.model_dump(), tmp_pdf)
 
-        # If attached to a case, store evidence + events (and mark report generated)
         if case_id:
-            if not workspace.get_case(case_id):
-                raise HTTPException(status_code=404, detail="Case not found")
-
-            evidence = workspace.add_evidence(case_id, analysis_dict)
-            analysis_model.evidence_id = evidence["id"]
-
-            workspace.add_event(
-                case_id,
-                "evidence.uploaded",
-                evidence_id=evidence["id"],
-                actor=actor,
-                ip=ip,
-                user_agent=ua,
-                details={"filename": analysis_model.filename, "bytes": analysis_model.bytes},
-            )
-            workspace.add_event(
-                case_id,
-                "evidence.analyzed",
-                evidence_id=evidence["id"],
-                actor=actor,
-                ip=ip,
-                user_agent=ua,
-                details={"provenance_state": analysis_model.provenance_state, "sha256": analysis_model.sha256},
+            evd = workspace.add_evidence(
+                case_id=case_id,
+                filename=file.filename or "upload",
+                sha256=analysis_model.sha256,
+                media_type=analysis_model.media_type,
+                nbytes=len(contents),
+                provenance_state=analysis_model.provenance_state,
+                summary=analysis_model.summary,
+                analysis=analysis_model.model_dump(),
             )
             workspace.add_event(
                 case_id,
                 "report.generated",
-                evidence_id=evidence["id"],
-                actor=actor,
-                ip=ip,
-                user_agent=ua,
-                details={"report_filename": "truthstamp-report.pdf"},
+                evidence_id=evd["id"],
+                actor=user["email"],
+                ip=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
+                details={"filename": file.filename, "sha256": analysis_model.sha256},
             )
 
         background_tasks.add_task(_cleanup_file, tmp_in)
@@ -408,7 +446,7 @@ async def report(
         raise HTTPException(status_code=500, detail="Report generation failed. See API logs.")
 
 
-# --- Pilot leads ---
+# --- Pilot leads (optional) ---
 class LeadIn(BaseModel):
     email: EmailStr
     role: str | None = None
@@ -418,7 +456,6 @@ class LeadIn(BaseModel):
 
 @app.post("/lead")
 async def lead(payload: LeadIn):
-    """Collect pilot program leads. Stored as JSONL on ephemeral disk (/tmp)."""
     try:
         line = {
             "email": payload.email,

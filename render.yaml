@@ -9,10 +9,15 @@ services:
     envVars:
       - key: TRUTHSTAMP_MAX_MB
         value: "25"
+      - key: TRUTHSTAMP_JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: https://truthstamp-web.onrender.com
 
   - type: web
     name: truthstamp-web
     env: node
+    nodeVersion: 20
     rootDir: web
     plan: free
     autoDeploy: true
