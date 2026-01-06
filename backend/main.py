@@ -2,8 +2,8 @@ import os
 import json
 import tempfile
 import traceback
-import pathlib
 import datetime
+import pathlib
 from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Form
@@ -31,7 +31,7 @@ from .report import build_pdf_report
 
 app = FastAPI()
 
-# --- CORS (Correct) ---
+# Allow your frontend origin (comma-separated)
 origins = os.getenv("CORS_ORIGINS", "https://truthstamp-web.onrender.com").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -61,26 +61,25 @@ def _cleanup_file(path: Optional[str]) -> None:
         pass
 
 
-def _analyze_from_path(
+def _analyze_to_model(
     in_path: str,
     filename: Optional[str],
     role: Optional[str],
     use_case: Optional[str],
-    bytes_len: Optional[int] = None,
+    bytes_len: int,
 ) -> AnalysisResult:
     """
     Single source of truth for analysis used by BOTH /analyze and /report.
-    Deterministic: no "fake probability", only provable/derived/unknown signals.
+    Returns an AnalysisResult object.
     """
     sha = sha256_file(in_path)
     media_type = detect_media_type(in_path)
-    tools = tool_versions()
+    tools = tool_versions() or {}
 
     meta = extract_exiftool(in_path) if media_type in {"image", "video", "unknown"} else {}
     ff = extract_ffprobe(in_path) if media_type in {"video", "unknown"} else {}
     c2pa = extract_c2pa(in_path)
 
-    # Engine functions are designed to handle missing keys; keep defensive dict coercions.
     meta_d = meta if isinstance(meta, dict) else {}
     ff_d = ff if isinstance(ff, dict) else {}
 
@@ -90,9 +89,9 @@ def _analyze_from_path(
     cons = metadata_consistency(meta_d)
     prov_state, prov_summary = classify_provenance(c2pa, meta_d)
 
-    make = (meta_d.get("EXIF:Make") or meta_d.get("Make"))
-    model = (meta_d.get("EXIF:Model") or meta_d.get("Model"))
-    sw = (meta_d.get("EXIF:Software") or meta_d.get("XMP:CreatorTool") or meta_d.get("Software"))
+    make = meta_d.get("EXIF:Make") or meta_d.get("Make")
+    model = meta_d.get("EXIF:Model") or meta_d.get("Model")
+    sw = meta_d.get("EXIF:Software") or meta_d.get("XMP:CreatorTool") or meta_d.get("Software")
 
     extra = []
     if make or model:
@@ -101,6 +100,8 @@ def _analyze_from_path(
         )
     if sw:
         extra.append(f"Software/creator tool tag: {sw}")
+
+    # Be defensive: ai/trans might not be dict depending on engine impl
     if isinstance(ai, dict) and ai.get("declared") == "POSSIBLE":
         extra.append(f"AI-related markers present in metadata: {', '.join((ai.get('signals') or [])[:6])}")
     if isinstance(trans, dict) and trans.get("screenshot_likelihood") == "HIGH":
@@ -111,11 +112,11 @@ def _analyze_from_path(
     tool_list = [
         ToolStatus(
             name=k,
-            available=v.get("available", False),
-            version=v.get("version"),
-            notes=v.get("notes"),
+            available=v.get("available", False) if isinstance(v, dict) else False,
+            version=v.get("version") if isinstance(v, dict) else None,
+            notes=v.get("notes") if isinstance(v, dict) else None,
         )
-        for k, v in (tools or {}).items()
+        for k, v in tools.items()
     ]
 
     findings = [
@@ -125,7 +126,6 @@ def _analyze_from_path(
             confidence="PROVABLE" if prov_state != "UNVERIFIABLE_NO_PROVENANCE" else "INFERRED",
         ),
     ]
-
     if make or model:
         findings.append(
             Finding(
@@ -145,12 +145,12 @@ def _analyze_from_path(
         )
 
     return AnalysisResult(
-        filename=filename or os.path.basename(in_path) or "upload",
+        filename=filename or "upload",
         role=role,
         use_case=use_case,
         media_type=media_type,
         sha256=sha,
-        bytes=bytes_len if bytes_len is not None else (os.path.getsize(in_path) if os.path.exists(in_path) else 0),
+        bytes=bytes_len,
         provenance_state=prov_state,
         summary=summary,
         tools=tool_list,
@@ -204,8 +204,8 @@ async def analyze(
         with open(in_path, "wb") as f:
             f.write(contents)
 
-        result = _analyze_from_path(in_path, file.filename, role, use_case, bytes_len=len(contents))
-        return result
+        # Return model directly (FastAPI serializes it)
+        return _analyze_to_model(in_path, file.filename, role, use_case, bytes_len=len(contents))
 
 
 @app.post("/report")
@@ -219,7 +219,6 @@ async def report(
     tmp_pdf = None
 
     try:
-        # Read upload once
         contents = await file.read()
         if _too_big(len(contents)):
             raise HTTPException(status_code=413, detail=f"File too large. Max {MAX_MB} MB.")
@@ -230,14 +229,14 @@ async def report(
             tmp_in = f.name
             f.write(contents)
 
-        analysis = _analyze_from_path(tmp_in, file.filename, role, use_case, bytes_len=len(contents))
+        analysis_model = _analyze_to_model(tmp_in, file.filename, role, use_case, bytes_len=len(contents))
 
         # Create PDF in /tmp
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as pf:
             tmp_pdf = pf.name
 
-        # IMPORTANT: build_pdf_report must write to tmp_pdf path
-        build_pdf_report(analysis, tmp_pdf)
+        # IMPORTANT: report builder expects a dict with .get()
+        build_pdf_report(analysis_model.model_dump(), tmp_pdf)
 
         # Cleanup after response is sent
         background_tasks.add_task(_cleanup_file, tmp_in)
@@ -250,7 +249,6 @@ async def report(
         )
 
     except HTTPException:
-        # pass through intended HTTP errors (e.g., 413)
         background_tasks.add_task(_cleanup_file, tmp_in)
         background_tasks.add_task(_cleanup_file, tmp_pdf)
         raise
@@ -258,10 +256,8 @@ async def report(
     except Exception as e:
         print("REPORT_GENERATION_ERROR:", repr(e))
         print(traceback.format_exc())
-
         background_tasks.add_task(_cleanup_file, tmp_in)
         background_tasks.add_task(_cleanup_file, tmp_pdf)
-
         raise HTTPException(status_code=500, detail="Report generation failed. See API logs.")
 
 
@@ -275,7 +271,7 @@ class LeadIn(BaseModel):
 
 @app.post("/lead")
 async def lead(payload: LeadIn):
-    """Collect pilot program leads. Stored as JSONL on ephemeral disk (/tmp)."""
+    """Collect pilot program leads. Stored as JSONL on ephemeral disk."""
     try:
         line = {
             "email": payload.email,
