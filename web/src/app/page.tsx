@@ -1,509 +1,578 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
+import Link from "next/link";
+import { useMemo } from "react";
+import { motion } from "framer-motion";
 import {
-  ShieldCheck,
-  Sparkles,
-  FileText,
   ArrowRight,
+  ShieldCheck,
+  FileCheck2,
+  ScanSearch,
   Lock,
-  UploadCloud,
+  Sparkles,
+  Globe,
+  Scale,
   BadgeCheck,
-  Info,
-  Cpu,
+  Boxes,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { getToken } from "@/lib/auth";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:10000";
+function cn(...classes: Array<string | false | undefined | null>) {
+  return classes.filter(Boolean).join(" ");
+}
 
-type AnalysisResult = {
-  filename: string;
-  media_type: string;
-  bytes: number;
-  sha256: string;
-  provenance_state: string;
-  summary: string;
-  tools?: Array<{ name: string; available: boolean; version?: string | null }>;
+const fadeUp = {
+  hidden: { opacity: 0, y: 14, filter: "blur(6px)" },
+  show: { opacity: 1, y: 0, filter: "blur(0px)", transition: { duration: 0.55, ease: "easeOut" } },
 };
 
-function badgeFor(state: string) {
-  const s = (state || "").toUpperCase();
-  if (s.includes("VERIFIED") || s.includes("PROVABLE"))
-    return {
-      label: "Verifiable",
-      cls: "bg-blue-600 text-white border-blue-600",
-      dot: "bg-white",
-    };
-  if (s.includes("UNVERIFIABLE"))
-    return {
-      label: "Unverifiable",
-      cls: "bg-white text-slate-700 border-slate-200",
-      dot: "bg-slate-400",
-    };
-  return {
-    label: "Unknown",
-    cls: "bg-white text-slate-700 border-slate-200",
-    dot: "bg-slate-400",
-  };
+const stagger = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.08 } },
+};
+
+function AnimatedBlob({
+  className,
+  delay = 0,
+}: {
+  className: string;
+  delay?: number;
+}) {
+  return (
+    <motion.div
+      className={cn(
+        "pointer-events-none absolute rounded-full blur-3xl opacity-50",
+        className
+      )}
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{
+        opacity: 0.55,
+        scale: [0.95, 1.06, 0.98],
+        x: [0, 18, -10, 0],
+        y: [0, -14, 12, 0],
+      }}
+      transition={{
+        delay,
+        duration: 10 + delay * 2,
+        repeat: Infinity,
+        repeatType: "mirror",
+        ease: "easeInOut",
+      }}
+    />
+  );
 }
 
-function formatBytes(bytes: number) {
-  if (!bytes && bytes !== 0) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${Math.round(kb * 10) / 10} KB`;
-  const mb = kb / 1024;
-  return `${Math.round(mb * 10) / 10} MB`;
+function GridGlow() {
+  return (
+    <div className="pointer-events-none absolute inset-0">
+      {/* Subtle grid */}
+      <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(15,23,42,0.06)_1px,transparent_1px),linear-gradient(to_bottom,rgba(15,23,42,0.06)_1px,transparent_1px)] bg-[size:48px_48px]" />
+      {/* Top vignette */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(37,99,235,0.14),transparent_55%)]" />
+      {/* Bottom vignette */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_bottom,rgba(59,130,246,0.10),transparent_60%)]" />
+    </div>
+  );
 }
 
-export default function Home() {
-  const router = useRouter();
-  const token = getToken();
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+export default function HomePage() {
+  const stats = useMemo(
+    () => [
+      { label: "Artifacts extracted", value: "C2PA + EXIF + FFprobe" },
+      { label: "Evidence workflow", value: "Cases + Chain-of-Custody" },
+      { label: "Output", value: "Report + Integrity Summary" },
+      { label: "Goal", value: "A digital notary for media" },
+    ],
+    []
+  );
 
-  const [file, setFile] = useState<File | null>(null);
-  const [role, setRole] = useState("All Evidence");
-  const [useCase, setUseCase] = useState("General verification");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const features = useMemo(
+    () => [
+      {
+        icon: <ScanSearch className="h-5 w-5" />,
+        title: "Instant provenance scan",
+        desc: "Upload an image or video to extract authenticity signals, edits, and tool traces.",
+      },
+      {
+        icon: <BadgeCheck className="h-5 w-5" />,
+        title: "High-trust signal model",
+        desc: "Separates cryptographic evidence from weak heuristics so users understand certainty.",
+      },
+      {
+        icon: <FileCheck2 className="h-5 w-5" />,
+        title: "Decision-ready report",
+        desc: "Structured findings, timeline hints, and tamper-evident hashes you can cite.",
+      },
+      {
+        icon: <Lock className="h-5 w-5" />,
+        title: "Evidence Workspace (login)",
+        desc: "Create cases, attach files, and maintain a chain-of-custody trail.",
+      },
+      {
+        icon: <Scale className="h-5 w-5" />,
+        title: "Built for high-stakes use",
+        desc: "Legal, journalism, insurance, compliance—anywhere trust is expensive.",
+      },
+      {
+        icon: <Boxes className="h-5 w-5" />,
+        title: "Platform path",
+        desc: "From reports → workflow → API → sealing inside partner apps.",
+      },
+    ],
+    []
+  );
 
-  const badge = useMemo(() => badgeFor(result?.provenance_state || ""), [result]);
-
-  async function analyze() {
-    if (!file) return;
-    setBusy(true);
-    setError(null);
-    setResult(null);
-
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("role", role);
-      fd.append("use_case", useCase);
-
-      const r = await fetch(`${API}/analyze`, { method: "POST", body: fd });
-      if (!r.ok) throw new Error(await r.text());
-      const data = (await r.json()) as AnalysisResult;
-      setResult(data);
-    } catch (e: any) {
-      setError(e?.message || "Analyze failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function generatePdf() {
-    if (!file) return;
-    if (!token) {
-      router.push(`/login?next=${encodeURIComponent("/")}`);
-      return;
-    }
-
-    setBusy(true);
-    setError(null);
-    try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("role", role);
-      fd.append("use_case", useCase);
-
-      const r = await fetch(`${API}/report`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
-      });
-      if (!r.ok) throw new Error(await r.text());
-      const blob = await r.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "truthstamp-report.pdf";
-      a.click();
-      window.URL.revokeObjectURL(url);
-    } catch (e: any) {
-      setError(e?.message || "PDF generation failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const pickFile = () => fileInputRef.current?.click();
+  const useCases = useMemo(
+    () => [
+      { title: "Legal & Court", desc: "Prepare evidence packets with audit trails and reproducible extraction." },
+      { title: "Journalism", desc: "Prove what’s known, what’s uncertain, and what metadata supports it." },
+      { title: "Insurance", desc: "Reduce AI-driven fraud and speed up claim decisions." },
+      { title: "Compliance", desc: "Maintain consistent verification and retention policies." },
+    ],
+    []
+  );
 
   return (
     <div className="min-h-screen bg-white text-slate-900">
-      {/* Dynamic background (white+blue only) */}
-      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        {/* animated grid */}
-        <motion.div
-          aria-hidden
-          className="absolute inset-0 opacity-[0.22]"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 0.22 }}
-          transition={{ duration: 0.8 }}
-          style={{
-            backgroundImage:
-              "radial-gradient(circle at 1px 1px, rgba(37,99,235,0.22) 1px, transparent 0)",
-            backgroundSize: "22px 22px",
-          }}
-        />
-        {/* light beams */}
-        <motion.div
-          aria-hidden
-          className="absolute -top-24 left-1/2 h-[560px] w-[980px] -translate-x-1/2 rounded-full blur-3xl"
-          style={{
-            background:
-              "linear-gradient(135deg, rgba(37,99,235,0.28), rgba(147,197,253,0.18), rgba(255,255,255,0))",
-          }}
-          animate={{ y: [0, 18, 0], scale: [1, 1.03, 1] }}
-          transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }}
-        />
-        <motion.div
-          aria-hidden
-          className="absolute -bottom-40 right-[-10%] h-[520px] w-[520px] rounded-full blur-3xl"
-          style={{
-            background:
-              "linear-gradient(45deg, rgba(37,99,235,0.18), rgba(191,219,254,0.14), rgba(255,255,255,0))",
-          }}
-          animate={{ y: [0, -14, 0], scale: [1, 1.04, 1] }}
-          transition={{ duration: 10, repeat: Infinity, ease: "easeInOut" }}
-        />
-      </div>
-
-      {/* Top nav */}
-      <header className="sticky top-0 z-30 border-b border-slate-100 bg-white/70 backdrop-blur">
-        <div className="mx-auto max-w-6xl px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <motion.div
-              className="h-10 w-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center shadow-sm"
-              initial={{ rotate: -6, scale: 0.98 }}
-              animate={{ rotate: 0, scale: 1 }}
-              transition={{ duration: 0.6, ease: "easeOut" }}
-            >
+      {/* Top chrome */}
+      <header className="sticky top-0 z-40 border-b border-slate-200/70 bg-white/85 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3">
+          <Link href="/" className="flex items-center gap-2">
+            <div className="h-9 w-9 rounded-xl bg-blue-600 text-white grid place-items-center shadow-sm">
               <ShieldCheck className="h-5 w-5" />
-            </motion.div>
-            <div>
-              <div className="text-sm font-semibold tracking-tight">TruthStamp</div>
-              <div className="text-xs text-slate-600">
-                Provenance reports — cryptographic proof when available
-              </div>
             </div>
-          </div>
+            <div className="leading-tight">
+              <div className="font-semibold tracking-tight">TruthStamp</div>
+              <div className="text-xs text-slate-500 -mt-0.5">Evidence-grade provenance</div>
+            </div>
+          </Link>
+
+          <nav className="hidden items-center gap-6 md:flex">
+            <a href="#product" className="text-sm text-slate-600 hover:text-slate-900">Product</a>
+            <a href="#usecases" className="text-sm text-slate-600 hover:text-slate-900">Use cases</a>
+            <a href="#workspace" className="text-sm text-slate-600 hover:text-slate-900">Workspace</a>
+            <a href="#trust" className="text-sm text-slate-600 hover:text-slate-900">Trust</a>
+          </nav>
 
           <div className="flex items-center gap-2">
-            {token ? (
-              <Button variant="secondary" onClick={() => router.push("/app")}>
-                Evidence Workspace
-              </Button>
-            ) : (
-              <>
-                <Button variant="secondary" onClick={() => router.push("/login")}>
-                  Sign in
-                </Button>
-                <Button onClick={() => router.push("/register")}>Create account</Button>
-              </>
-            )}
+            <Button asChild variant="ghost" className="hidden md:inline-flex">
+              <Link href="/login">Log in</Link>
+            </Button>
+            <Button asChild className="bg-blue-600 hover:bg-blue-700">
+              <Link href="/register">
+                Create account <ArrowRight className="ml-2 h-4 w-4" />
+              </Link>
+            </Button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-10">
-        {/* HERO */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start">
-          <div className="lg:col-span-7">
-            <motion.div
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.55, ease: "easeOut" }}
-              className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs text-blue-700 shadow-[0_1px_0_rgba(37,99,235,0.08)]"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              Provenance-first verification (no &quot;fake probability&quot;)
+      {/* Hero */}
+      <section className="relative overflow-hidden">
+        <GridGlow />
+
+        {/* Animated blobs (white/blue only) */}
+        <AnimatedBlob className="left-[-120px] top-[-90px] h-[320px] w-[320px] bg-blue-500/35" delay={0} />
+        <AnimatedBlob className="right-[-140px] top-[60px] h-[360px] w-[360px] bg-sky-400/30" delay={0.6} />
+        <AnimatedBlob className="left-[30%] bottom-[-180px] h-[420px] w-[420px] bg-blue-600/20" delay={1.1} />
+
+        <div className="mx-auto w-full max-w-6xl px-4 pb-14 pt-14 md:pt-20">
+          <motion.div variants={stagger} initial="hidden" animate="show" className="grid gap-10 md:grid-cols-2 md:gap-12">
+            <motion.div variants={fadeUp}>
+              <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs text-blue-700">
+                <Sparkles className="h-4 w-4" />
+                Proof-first provenance • built for the AI slop era
+              </div>
+
+              <h1 className="mt-5 text-4xl font-semibold tracking-tight text-slate-900 md:text-5xl">
+                Trust media with <span className="text-blue-600">evidence</span>, not guesses.
+              </h1>
+
+              <p className="mt-4 max-w-xl text-base leading-relaxed text-slate-600 md:text-lg">
+                TruthStamp extracts authenticity signals from images and videos and turns them into
+                decision-ready findings. For anyone who needs to prove what happened—and when.
+              </p>
+
+              <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+                <Button asChild className="bg-blue-600 hover:bg-blue-700">
+                  <a href="#try">
+                    Try a quick scan <ArrowRight className="ml-2 h-4 w-4" />
+                  </a>
+                </Button>
+                <Button asChild variant="outline" className="border-slate-300">
+                  <Link href="/cases">Open Evidence Workspace</Link>
+                </Button>
+              </div>
+
+              <div className="mt-6 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                <Badge variant="secondary" className="bg-white/80 border border-slate-200 text-slate-700">
+                  C2PA-aware
+                </Badge>
+                <Badge variant="secondary" className="bg-white/80 border border-slate-200 text-slate-700">
+                  EXIF + FFprobe
+                </Badge>
+                <Badge variant="secondary" className="bg-white/80 border border-slate-200 text-slate-700">
+                  Hash + audit trail
+                </Badge>
+                <Badge variant="secondary" className="bg-white/80 border border-slate-200 text-slate-700">
+                  Report export
+                </Badge>
+              </div>
             </motion.div>
 
-            <motion.h1
-              className="mt-4 text-[42px] leading-[1.05] font-semibold tracking-tight"
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.05, ease: "easeOut" }}
-            >
-              Trust digital evidence{" "}
-              <span className="text-blue-700">without guessing</span>.
-            </motion.h1>
+            {/* Hero right card */}
+            <motion.div variants={fadeUp} className="relative">
+              <Card className="relative overflow-hidden border-slate-200/70 bg-white/80 shadow-sm">
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-slate-900">Integrity Summary</div>
+                      <div className="text-xs text-slate-500">A preview of what your scan produces</div>
+                    </div>
+                    <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600">
+                      <Globe className="h-4 w-4 text-blue-600" />
+                      Evidence-grade output
+                    </div>
+                  </div>
 
-            <motion.p
-              className="mt-4 text-base text-slate-600 max-w-xl"
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
-            >
-              Upload a photo or video. TruthStamp extracts provenance (C2PA when present) and
-              structured technical metadata, then separates what is provable, inferred, and unknown.
-            </motion.p>
+                  <div className="mt-6 grid gap-3">
+                    {stats.map((s) => (
+                      <div
+                        key={s.label}
+                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3"
+                      >
+                        <div className="text-sm text-slate-600">{s.label}</div>
+                        <div className="text-sm font-medium text-slate-900">{s.value}</div>
+                      </div>
+                    ))}
+                  </div>
 
-            {/* Proof chips */}
-            <motion.div
-              className="mt-6 flex flex-wrap gap-2"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.15, ease: "easeOut" }}
-            >
-              {[
-                { icon: <BadgeCheck className="h-4 w-4" />, t: "Evidence-grade structure" },
-                { icon: <Cpu className="h-4 w-4" />, t: "C2PA + metadata inspection" },
-                { icon: <Info className="h-4 w-4" />, t: "Clear limitations & unknowns" },
-              ].map((x) => (
-                <div
-                  key={x.t}
-                  className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700 shadow-sm"
-                >
-                  <span className="text-blue-700">{x.icon}</span>
-                  {x.t}
+                  <div className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 rounded-lg bg-blue-600 p-2 text-white">
+                        <ShieldCheck className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-blue-900">What you get</div>
+                        <p className="mt-1 text-sm text-blue-800/90">
+                          A structured analysis + reproducible metadata extraction. When possible,
+                          cryptographic provenance is highlighted separately from weaker signals.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex items-center justify-between text-xs text-slate-500">
+                    <span>Public quick scan is free</span>
+                    <span className="inline-flex items-center gap-1">
+                      <Lock className="h-3.5 w-3.5 text-blue-600" /> PDF export requires login
+                    </span>
+                  </div>
+                </CardContent>
+
+                {/* subtle border glow */}
+                <div className="pointer-events-none absolute inset-0 rounded-2xl ring-1 ring-blue-200/40" />
+              </Card>
+
+              {/* floating micro cards */}
+              <motion.div
+                className="absolute -bottom-6 -left-4 hidden w-[220px] rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:block"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.35, duration: 0.45 }}
+              >
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <div className="h-8 w-8 rounded-xl bg-blue-600/10 grid place-items-center">
+                    <ScanSearch className="h-4 w-4 text-blue-700" />
+                  </div>
+                  Confidence framing
                 </div>
-              ))}
+                <p className="mt-2 text-xs text-slate-600">
+                  Show users what’s proven vs inferred—so they can act.
+                </p>
+              </motion.div>
+
+              <motion.div
+                className="absolute -top-6 -right-4 hidden w-[220px] rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:block"
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.45, duration: 0.45 }}
+              >
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <div className="h-8 w-8 rounded-xl bg-blue-600/10 grid place-items-center">
+                    <FileCheck2 className="h-4 w-4 text-blue-700" />
+                  </div>
+                  Chain of custody
+                </div>
+                <p className="mt-2 text-xs text-slate-600">
+                  Case history + file hashes + actions timeline.
+                </p>
+              </motion.div>
+            </motion.div>
+          </motion.div>
+        </div>
+      </section>
+
+      {/* Product */}
+      <section id="product" className="border-t border-slate-200/70 bg-white">
+        <div className="mx-auto w-full max-w-6xl px-4 py-14 md:py-16">
+          <motion.div variants={stagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.25 }}>
+            <motion.div variants={fadeUp} className="flex items-end justify-between gap-6">
+              <div>
+                <div className="text-sm font-medium text-blue-600">Product</div>
+                <h2 className="mt-2 text-2xl font-semibold tracking-tight md:text-3xl">
+                  Built like an evidence tool, not a detector.
+                </h2>
+                <p className="mt-3 max-w-2xl text-slate-600">
+                  TruthStamp is designed for high-stakes workflows: it extracts signals, explains them,
+                  and produces outputs you can reference.
+                </p>
+              </div>
             </motion.div>
 
-            {/* Feature cards */}
-            <div className="mt-7 grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {[
-                {
-                  title: "Evidence Workspace",
-                  body: "Cases + chain-of-custody events for investigations, legal, or journalism.",
-                },
-                {
-                  title: "Cryptographic when possible",
-                  body: "Verifies C2PA trust chains and surfaces signer & assertions when present.",
-                },
-                {
-                  title: "Decision-grade outputs",
-                  body: "Human-readable summary plus full JSON; PDF report is login-gated.",
-                },
-              ].map((c, i) => (
-                <motion.div
-                  key={c.title}
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.55, delay: 0.15 + i * 0.05, ease: "easeOut" }}
-                >
-                  <Card className="p-4 border-slate-200 shadow-sm rounded-2xl">
-                    <div className="text-sm font-semibold">{c.title}</div>
-                    <div className="mt-1 text-sm text-slate-600">{c.body}</div>
+            <div className="mt-8 grid gap-4 md:grid-cols-3">
+              {features.map((f) => (
+                <motion.div key={f.title} variants={fadeUp}>
+                  <Card className="h-full border-slate-200/70 bg-white shadow-sm">
+                    <CardContent className="p-6">
+                      <div className="flex items-center gap-3">
+                        <div className="rounded-xl bg-blue-600/10 p-2 text-blue-700">{f.icon}</div>
+                        <div className="font-medium">{f.title}</div>
+                      </div>
+                      <p className="mt-3 text-sm leading-relaxed text-slate-600">{f.desc}</p>
+                    </CardContent>
                   </Card>
                 </motion.div>
               ))}
             </div>
+          </motion.div>
+        </div>
+      </section>
+
+      {/* Try */}
+      <section id="try" className="border-t border-slate-200/70 bg-slate-50">
+        <div className="mx-auto w-full max-w-6xl px-4 py-14 md:py-16">
+          <div className="grid gap-8 md:grid-cols-2 md:items-center">
+            <div>
+              <div className="text-sm font-medium text-blue-600">Try it</div>
+              <h3 className="mt-2 text-2xl font-semibold tracking-tight md:text-3xl">
+                Anyone can run a quick scan.
+              </h3>
+              <p className="mt-3 text-slate-600">
+                Not logged in? Upload a single file and see results. Need PDF + cases? Create an account.
+              </p>
+              <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                <Button asChild className="bg-blue-600 hover:bg-blue-700">
+                  <Link href="/#analyze">Upload & analyze</Link>
+                </Button>
+                <Button asChild variant="outline" className="border-slate-300">
+                  <Link href="/register">Unlock PDF & cases</Link>
+                </Button>
+              </div>
+            </div>
+
+            <Card className="border-slate-200/70 bg-white shadow-sm">
+              <CardContent className="p-6">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <div className="h-8 w-8 rounded-xl bg-blue-600 text-white grid place-items-center">
+                    <ShieldCheck className="h-4 w-4" />
+                  </div>
+                  What “good” looks like
+                </div>
+
+                <div className="mt-4 grid gap-3 text-sm">
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                    <div className="font-medium text-slate-900">Provenance present</div>
+                    <div className="mt-1 text-slate-600">
+                      If a trust chain exists, we surface it clearly.
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                    <div className="font-medium text-slate-900">Edits explained</div>
+                    <div className="mt-1 text-slate-600">
+                      We show timelines & tool hints—without overclaiming.
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+                    <div className="font-medium text-slate-900">Reproducible</div>
+                    <div className="mt-1 text-slate-600">
+                      Hashes + extraction notes so another reviewer can verify.
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-5 text-xs text-slate-500">
+                  Tip: keep files under your configured upload limit on Render free plan.
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </section>
+
+      {/* Use cases */}
+      <section id="usecases" className="border-t border-slate-200/70 bg-white">
+        <div className="mx-auto w-full max-w-6xl px-4 py-14 md:py-16">
+          <div className="flex items-end justify-between gap-6">
+            <div>
+              <div className="text-sm font-medium text-blue-600">Use cases</div>
+              <h3 className="mt-2 text-2xl font-semibold tracking-tight md:text-3xl">
+                Trust is a workflow problem.
+              </h3>
+              <p className="mt-3 max-w-2xl text-slate-600">
+                You’re not “detecting deepfakes.” You’re producing defensible artifacts for real decisions.
+              </p>
+            </div>
           </div>
 
-          {/* Upload module */}
-          <div className="lg:col-span-5">
-            <motion.div
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, ease: "easeOut" }}
-            >
-              <Card className="p-6 border-slate-200 shadow-[0_12px_30px_rgba(2,6,23,0.06)] rounded-3xl">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-semibold">Upload evidence</div>
-                    <div className="text-xs text-slate-600">
-                      Guest analysis is free. PDF report requires login.
+          <div className="mt-8 grid gap-4 md:grid-cols-2">
+            {useCases.map((u) => (
+              <Card key={u.title} className="border-slate-200/70 bg-white shadow-sm">
+                <CardContent className="p-6">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="text-lg font-medium">{u.title}</div>
+                      <p className="mt-2 text-sm text-slate-600">{u.desc}</p>
+                    </div>
+                    <div className="h-10 w-10 rounded-2xl bg-blue-600/10 grid place-items-center text-blue-700">
+                      <ArrowRight className="h-5 w-5" />
                     </div>
                   </div>
-                  <div className="text-[11px] text-slate-500">
-                    API{" "}
-                    <span className="font-mono text-slate-600">
-                      {API.replace("https://", "")}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Custom file picker */}
-                <div className="mt-5">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    className="hidden"
-                    onChange={(e) => setFile(e.target.files?.[0] || null)}
-                  />
-
-                  <motion.button
-                    type="button"
-                    onClick={pickFile}
-                    whileHover={{ y: -1 }}
-                    whileTap={{ scale: 0.98 }}
-                    className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-left shadow-sm hover:shadow-md transition-shadow"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="h-10 w-10 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-700">
-                        <UploadCloud className="h-5 w-5" />
-                      </div>
-                      <div className="flex-1">
-                        <div className="text-sm font-semibold">
-                          {file ? file.name : "Choose a photo or video"}
-                        </div>
-                        <div className="text-xs text-slate-600">
-                          {file ? `${formatBytes(file.size)} • ready to analyze` : "Drag & drop coming soon"}
-                        </div>
-                      </div>
-                      <div className="text-xs text-blue-700 font-medium">Browse</div>
-                    </div>
-                  </motion.button>
-                </div>
-
-                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-xs font-medium text-slate-700 mb-1">Role</div>
-                    <Input value={role} onChange={(e) => setRole(e.target.value)} />
-                  </div>
-                  <div>
-                    <div className="text-xs font-medium text-slate-700 mb-1">Use case</div>
-                    <Input value={useCase} onChange={(e) => setUseCase(e.target.value)} />
-                  </div>
-                </div>
-
-                <AnimatePresence>
-                  {error && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 6 }}
-                      className="mt-4 text-sm text-red-600 border border-red-200 bg-red-50 rounded-xl p-3"
-                    >
-                      {error}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <div className="mt-5 flex gap-2">
-                  <Button
-                    disabled={!file || busy}
-                    onClick={analyze}
-                    className="flex-1 rounded-2xl h-11"
-                  >
-                    {busy ? (
-                      "Working…"
-                    ) : (
-                      <span className="inline-flex items-center gap-2">
-                        Analyze <ArrowRight className="h-4 w-4" />
-                      </span>
-                    )}
-                  </Button>
-
-                  <Button
-                    disabled={!file || busy}
-                    variant="secondary"
-                    onClick={generatePdf}
-                    className="rounded-2xl h-11"
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      <FileText className="h-4 w-4" /> PDF
-                      {!token ? <Lock className="h-3.5 w-3.5" /> : null}
-                    </span>
-                  </Button>
-                </div>
-
-                {/* tiny trust line */}
-                <div className="mt-4 text-[11px] text-slate-500">
-                  TruthStamp reports provenance and metadata — it does not estimate &quot;fake probability.&quot;
-                </div>
+                </CardContent>
               </Card>
-            </motion.div>
+            ))}
           </div>
         </div>
+      </section>
 
-        {/* RESULT */}
-        <div className="mt-10">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Result</h2>
-            {result?.provenance_state ? (
-              <span className={`text-xs px-2.5 py-1 rounded-full border ${badge.cls} inline-flex items-center gap-2`}>
-                <span className={`h-1.5 w-1.5 rounded-full ${badge.dot}`} />
-                {badge.label}
-              </span>
-            ) : (
-              <span className="text-xs text-slate-500">Upload a file to see a result</span>
-            )}
-          </div>
+      {/* Workspace */}
+      <section id="workspace" className="border-t border-slate-200/70 bg-slate-50">
+        <div className="mx-auto w-full max-w-6xl px-4 py-14 md:py-16">
+          <div className="grid gap-8 md:grid-cols-2 md:items-center">
+            <div>
+              <div className="text-sm font-medium text-blue-600">Evidence Workspace</div>
+              <h3 className="mt-2 text-2xl font-semibold tracking-tight md:text-3xl">
+                Cases + chain-of-custody, built-in.
+              </h3>
+              <p className="mt-3 text-slate-600">
+                Login unlocks case dashboards, file history, and report exports—so TruthStamp becomes
+                the place you manage evidence.
+              </p>
 
-          <AnimatePresence>
-            {result && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 10 }}
-                transition={{ duration: 0.35 }}
-              >
-                <Card className="mt-3 p-6 border-slate-200 shadow-sm rounded-3xl">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="rounded-2xl border border-slate-200 p-4">
-                      <div className="text-xs text-slate-500">SHA-256</div>
-                      <div className="mt-2 font-mono text-xs break-all">{result.sha256}</div>
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 p-4">
-                      <div className="text-xs text-slate-500">Media type</div>
-                      <div className="mt-2 text-sm font-medium">{result.media_type}</div>
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 p-4">
-                      <div className="text-xs text-slate-500">Size</div>
-                      <div className="mt-2 text-sm font-medium">{formatBytes(result.bytes)}</div>
-                    </div>
+              <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                <Button asChild className="bg-blue-600 hover:bg-blue-700">
+                  <Link href="/cases">
+                    Go to cases <ArrowRight className="ml-2 h-4 w-4" />
+                  </Link>
+                </Button>
+                <Button asChild variant="outline" className="border-slate-300">
+                  <Link href="/login">Log in</Link>
+                </Button>
+              </div>
+            </div>
+
+            <Card className="border-slate-200/70 bg-white shadow-sm">
+              <CardContent className="p-6">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <div className="h-8 w-8 rounded-xl bg-blue-600 text-white grid place-items-center">
+                    <Lock className="h-4 w-4" />
                   </div>
+                  Workspace includes
+                </div>
 
-                  <div className="mt-4 text-sm text-slate-700">{result.summary}</div>
-
-                  <div className="mt-6">
-                    <div className="text-sm font-semibold">Tools</div>
-                    <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
-                      {(result.tools || []).map((t) => (
-                        <motion.div
-                          key={t.name}
-                          whileHover={{ y: -2 }}
-                          transition={{ duration: 0.18 }}
-                          className="rounded-2xl border border-slate-200 p-4 flex items-center justify-between bg-white"
-                        >
-                          <div>
-                            <div className="text-sm font-medium">{t.name}</div>
-                            <div className="text-xs text-slate-500">{t.version || "—"}</div>
-                          </div>
-                          <span
-                            className={`text-xs px-2 py-1 rounded-full border ${
-                              t.available
-                                ? "bg-blue-50 text-blue-700 border-blue-200"
-                                : "bg-slate-50 text-slate-700 border-slate-200"
-                            }`}
-                          >
-                            {t.available ? "available" : "missing"}
-                          </span>
-                        </motion.div>
-                      ))}
+                <div className="mt-4 grid gap-3">
+                  {[
+                    "Create cases for clients / incidents",
+                    "Attach media + notes per case",
+                    "Automatic file hashing for traceability",
+                    "Action timeline (uploads, reports, exports)",
+                    "PDF export (gated behind login)",
+                  ].map((x) => (
+                    <div key={x} className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">
+                      {x}
                     </div>
-                  </div>
-                </Card>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* Footer */}
-        <div className="mt-10 flex items-center justify-between text-xs text-slate-500">
-          <div className="inline-flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-blue-700" />
-            Evidence-first. Transparent. No guessing.
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
           </div>
-          <button
-            className="text-blue-700 hover:text-blue-800 transition-colors"
-            onClick={() => router.push(token ? "/app" : "/login")}
-          >
-            {token ? "Go to Workspace →" : "Sign in for Cases →"}
-          </button>
         </div>
-      </main>
+      </section>
+
+      {/* Trust */}
+      <section id="trust" className="border-t border-slate-200/70 bg-white">
+        <div className="mx-auto w-full max-w-6xl px-4 py-14 md:py-16">
+          <div className="rounded-3xl border border-slate-200 bg-gradient-to-br from-blue-50 via-white to-white p-8 shadow-sm md:p-10">
+            <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+              <div>
+                <div className="text-sm font-medium text-blue-600">Trust</div>
+                <h3 className="mt-2 text-2xl font-semibold tracking-tight md:text-3xl">
+                  Your credibility layer for media.
+                </h3>
+                <p className="mt-3 max-w-2xl text-slate-600">
+                  TruthStamp is built to separate what’s provable from what’s inferred, and present it
+                  with clarity. That’s what makes it useful.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <Button asChild className="bg-blue-600 hover:bg-blue-700">
+                  <Link href="/register">Create account</Link>
+                </Button>
+                <Button asChild variant="outline" className="border-slate-300">
+                  <Link href="/login">Log in</Link>
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-8 grid gap-4 md:grid-cols-3">
+              {[
+                { icon: <ShieldCheck className="h-5 w-5" />, title: "Proof-forward", desc: "Cryptographic provenance surfaced first." },
+                { icon: <ScanSearch className="h-5 w-5" />, title: "Explainable", desc: "Clear findings and confidence framing." },
+                { icon: <Lock className="h-5 w-5" />, title: "Defensible", desc: "Hashes + workflow trail for audits." },
+              ].map((x) => (
+                <div key={x.title} className="rounded-2xl border border-slate-200 bg-white p-6">
+                  <div className="flex items-center gap-3">
+                    <div className="rounded-xl bg-blue-600/10 p-2 text-blue-700">{x.icon}</div>
+                    <div className="font-medium">{x.title}</div>
+                  </div>
+                  <p className="mt-3 text-sm text-slate-600">{x.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="border-t border-slate-200/70 bg-white">
+        <div className="mx-auto w-full max-w-6xl px-4 py-10">
+          <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-2">
+              <div className="h-9 w-9 rounded-xl bg-blue-600 text-white grid place-items-center">
+                <ShieldCheck className="h-5 w-5" />
+              </div>
+              <div>
+                <div className="font-semibold">TruthStamp</div>
+                <div className="text-xs text-slate-500">Provenance for high-stakes media</div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-3 text-sm">
+              <Link className="text-slate-600 hover:text-slate-900" href="/login">Login</Link>
+              <Link className="text-slate-600 hover:text-slate-900" href="/register">Sign up</Link>
+              <Link className="text-slate-600 hover:text-slate-900" href="/cases">Cases</Link>
+            </div>
+          </div>
+
+          <div className="mt-6 text-xs text-slate-500">
+            © {new Date().getFullYear()} TruthStamp. Built for evidence workflows.
+          </div>
+        </div>
+      </footer>
     </div>
   );
 }
