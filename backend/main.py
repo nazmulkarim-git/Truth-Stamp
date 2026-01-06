@@ -1,5 +1,6 @@
 import os
 import tempfile
+import traceback
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Form
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +26,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 @app.get("/health")
 def health():
     return {"ok": True, "service": "truthstamp-api"}
@@ -146,89 +146,49 @@ async def report(
     role: str | None = Form(default=None),
     use_case: str | None = Form(default=None),
 ):
-    contents = await file.read()
-    if _too_big(len(contents)):
-        raise HTTPException(status_code=413, detail=f"File too large. Max {MAX_MB} MB.")
+    tmp_in = None
+    tmp_pdf = None
+    try:
+        # Save upload to /tmp
+        suffix = os.path.splitext(file.filename or "")[-1] or ".bin"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+            tmp_in = f.name
+            f.write(await file.read())
 
-    with tempfile.TemporaryDirectory() as td:
-        in_path = os.path.join(td, file.filename or "upload.bin")
-        with open(in_path, "wb") as f:
-            f.write(contents)
+        # Re-run analysis (or call your shared analysis function)
+        # IMPORTANT: Make sure every dict/list has defaults to avoid crashes.
+        analysis = await _analyze_path(tmp_in, filename=file.filename, role=role, use_case=use_case)
 
-        sha = sha256_file(in_path)
-        media_type = detect_media_type(in_path)
-        tools = tool_versions()
+        # Create PDF in /tmp
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as pf:
+            tmp_pdf = pf.name
 
-        meta = extract_exiftool(in_path) if media_type in {"image", "video", "unknown"} else {}
-        ff = extract_ffprobe(in_path) if media_type in {"video", "unknown"} else {}
-        c2pa = extract_c2pa(in_path)
+        build_pdf_report(analysis, tmp_pdf)  # ensure build_pdf_report writes to tmp_pdf
 
-        ai = ai_disclosure_from_metadata(meta if isinstance(meta, dict) else {})
-        trans = transformation_hints(meta if isinstance(meta, dict) else {}, ff if isinstance(ff, dict) else {})
-        tl = derived_timeline(meta if isinstance(meta, dict) else {})
-        cons = metadata_consistency(meta if isinstance(meta, dict) else {})
-        prov_state, prov_summary = classify_provenance(c2pa, meta if isinstance(meta, dict) else {})
+        # Clean up after response is sent
+        if tmp_in:
+            background_tasks.add_task(os.remove, tmp_in)
+        if tmp_pdf:
+            background_tasks.add_task(os.remove, tmp_pdf)
 
-        make = (meta.get("EXIF:Make") or meta.get("Make")) if isinstance(meta, dict) else None
-        model = (meta.get("EXIF:Model") or meta.get("Model")) if isinstance(meta, dict) else None
-        sw = (meta.get("EXIF:Software") or meta.get("XMP:CreatorTool") or meta.get("Software")) if isinstance(meta, dict) else None
+        return FileResponse(
+            tmp_pdf,
+            media_type="application/pdf",
+            filename="truthstamp-report.pdf",
+        )
 
-        extra = []
-        if make or model:
-            extra.append(f"Device metadata suggests capture on: {(make or '').strip()} {(model or '').strip()}".strip())
-        if sw:
-            extra.append(f"Software/creator tool tag: {sw}")
-        if ai.get("declared") == "POSSIBLE":
-            extra.append(f"AI-related markers present in metadata: {', '.join(ai.get('signals', [])[:6])}")
-        if trans.get("screenshot_likelihood") == "HIGH":
-            extra.append("Workflow hints suggest possible screenshot/screen capture.")
+    except Exception as e:
+        # print traceback into Render logs
+        print("REPORT_GENERATION_ERROR:", repr(e))
+        print(traceback.format_exc())
 
-        summary = prov_summary + (" " + " ".join(extra) if extra else "")
+        # cleanup if created
+        if tmp_in and os.path.exists(tmp_in):
+            os.remove(tmp_in)
+        if tmp_pdf and os.path.exists(tmp_pdf):
+            os.remove(tmp_pdf)
 
-        tool_list = [
-            {"name": k, "available": v["available"], "version": v.get("version"), "notes": v.get("notes")}
-            for k, v in tools.items()
-        ]
-
-        result = {
-            "filename": file.filename or "upload",
-            "media_type": media_type,
-            "sha256": sha,
-            "bytes": len(contents),
-            "provenance_state": prov_state,
-            "summary": summary,
-            "tools": tool_list,
-            "c2pa": c2pa,
-            "metadata": meta if isinstance(meta, dict) else {},
-            "ai_disclosure": ai,
-            "transformations": trans,
-            "derived_timeline": tl,
-            "metadata_consistency": cons,
-            "decision_context": {
-                "purpose": "Support financial, legal, or editorial decision-making without guessing.",
-                "principle": "Separates provable facts, technical observations, and unknowns.",
-            },
-            "what_would_make_verifiable": [
-                "Capture from a C2PA-enabled camera/app",
-                "Preserve the original file without re-export or platform recompression",
-                "Seal media at capture inside a trusted app or device workflow",
-            ],
-            "report_integrity": {
-                "analyzed_at": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-                "tools": {t["name"]: {"available": t["available"], "version": t.get("version")} for t in tool_list},
-            },
-        }
-
-        # IMPORTANT: FileResponse streams after return. Do NOT place the PDF inside
-        # TemporaryDirectory that will be deleted immediately.
-        out_f = tempfile.NamedTemporaryFile(prefix="truthstamp_", suffix=".pdf", delete=False)
-        out_pdf = out_f.name
-        out_f.close()
-
-        build_pdf_report(out_pdf, result)
-
-        background_tasks.add_task(_cleanup_file, out_pdf)
-        return FileResponse(out_pdf, media_type="application/pdf", filename=f"TruthStamp_Report_{sha[:10]}.pdf")
+        raise HTTPException(status_code=500, detail="Report generation failed. See API logs.")
 
 
 from pydantic import BaseModel, EmailStr
