@@ -68,10 +68,6 @@ def _analyze_to_model(
     use_case: Optional[str],
     bytes_len: int,
 ) -> AnalysisResult:
-    """
-    Single source of truth for analysis used by BOTH /analyze and /report.
-    Returns an AnalysisResult object.
-    """
     sha = sha256_file(in_path)
     media_type = detect_media_type(in_path)
     tools = tool_versions() or {}
@@ -95,13 +91,10 @@ def _analyze_to_model(
 
     extra = []
     if make or model:
-        extra.append(
-            f"Device metadata suggests capture on: {(make or '').strip()} {(model or '').strip()}".strip()
-        )
+        extra.append(f"Device metadata suggests capture on: {(make or '').strip()} {(model or '').strip()}".strip())
     if sw:
         extra.append(f"Software/creator tool tag: {sw}")
 
-    # Be defensive: ai/trans might not be dict depending on engine impl
     if isinstance(ai, dict) and ai.get("declared") == "POSSIBLE":
         extra.append(f"AI-related markers present in metadata: {', '.join((ai.get('signals') or [])[:6])}")
     if isinstance(trans, dict) and trans.get("screenshot_likelihood") == "HIGH":
@@ -182,6 +175,8 @@ def _analyze_to_model(
             "Seal media at capture inside a trusted app or device workflow",
         ],
         report_integrity={
+            # report.py expects timestamp; keep both for compatibility
+            "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
             "analyzed_at": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
             "tools": {t.name: {"available": t.available, "version": t.version} for t in tool_list},
         },
@@ -203,8 +198,6 @@ async def analyze(
         in_path = os.path.join(td, file.filename or "upload.bin")
         with open(in_path, "wb") as f:
             f.write(contents)
-
-        # Return model directly (FastAPI serializes it)
         return _analyze_to_model(in_path, file.filename, role, use_case, bytes_len=len(contents))
 
 
@@ -223,7 +216,6 @@ async def report(
         if _too_big(len(contents)):
             raise HTTPException(status_code=413, detail=f"File too large. Max {MAX_MB} MB.")
 
-        # Save upload to /tmp (Render-safe)
         suffix = os.path.splitext(file.filename or "")[-1] or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
             tmp_in = f.name
@@ -231,22 +223,16 @@ async def report(
 
         analysis_model = _analyze_to_model(tmp_in, file.filename, role, use_case, bytes_len=len(contents))
 
-        # Create PDF in /tmp
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as pf:
             tmp_pdf = pf.name
 
-        # IMPORTANT: report builder expects a dict with .get()
+        # FIX: report builder accepts (result_dict, out_path)
         build_pdf_report(analysis_model.model_dump(), tmp_pdf)
 
-        # Cleanup after response is sent
         background_tasks.add_task(_cleanup_file, tmp_in)
         background_tasks.add_task(_cleanup_file, tmp_pdf)
 
-        return FileResponse(
-            tmp_pdf,
-            media_type="application/pdf",
-            filename="truthstamp-report.pdf",
-        )
+        return FileResponse(tmp_pdf, media_type="application/pdf", filename="truthstamp-report.pdf")
 
     except HTTPException:
         background_tasks.add_task(_cleanup_file, tmp_in)
@@ -261,7 +247,6 @@ async def report(
         raise HTTPException(status_code=500, detail="Report generation failed. See API logs.")
 
 
-# --- Pilot leads ---
 class LeadIn(BaseModel):
     email: EmailStr
     role: str | None = None
@@ -271,7 +256,6 @@ class LeadIn(BaseModel):
 
 @app.post("/lead")
 async def lead(payload: LeadIn):
-    """Collect pilot program leads. Stored as JSONL on ephemeral disk."""
     try:
         line = {
             "email": payload.email,
